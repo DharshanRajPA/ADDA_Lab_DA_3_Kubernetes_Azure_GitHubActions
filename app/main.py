@@ -9,3 +9,6 @@ def read_root():
 @app.get("/health")
 def health_check():
     return {"status": "healthy"}
+
+app.run(host="0.0.0.0", port=5000)
+
