@@ -1,4 +1,3 @@
-# k8s/atlas-deployment.yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -16,21 +15,13 @@ spec:
         app: atlas-app
     spec:
       containers:
-        - name: atlas-app
-          image: atlas-app:latest
-          ports:
-            - containerPort: 5000
-# k8s/atlas-service-nodeport.yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: atlas-svc
-spec:
-  type: NodePort
-  selector:
-    app: atlas-app
-  ports:
-    - port: 80
-      targetPort: 5000
-      nodePort: 30080
-
+      - name: atlas-container
+        image: atlas-app:latest
+        ports:
+        - containerPort: 8000
+        readinessProbe:                   # optional but recommended
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 5
