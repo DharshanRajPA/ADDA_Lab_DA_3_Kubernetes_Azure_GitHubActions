@@ -1,0 +1,29 @@
+name: CI – atlas-app
+on:
+  push:
+    branches: [ main ]
+jobs:
+  minikube-ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start Minikube
+        uses: medyagh/setup-minikube@latest
+
+      - name: Build Docker image
+        run: docker build -t atlas-app:latest .
+
+      - name: Load image into Minikube
+        run: minikube image load atlas-app:latest
+
+      - name: Deploy to Minikube
+        run: |
+          kubectl create namespace atlas || true
+          kubectl apply -n atlas -f k8s/atlas-deployment.yaml
+          kubectl apply -n atlas -f k8s/atlas-service-nodeport.yaml
+
+      - name: Smoke-test the service
+        run: |
+          IP=$(minikube ip)
+          curl --retry 5 http://$IP:30080/health
