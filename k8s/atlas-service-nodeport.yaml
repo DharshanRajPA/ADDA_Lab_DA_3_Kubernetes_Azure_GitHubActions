@@ -1,0 +1,13 @@
+# k8s/atlas-service-nodeport.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: atlas-svc
+spec:
+  type: NodePort
+  selector:
+    app: atlas-app
+  ports:
+    - port: 80
+      targetPort: 5000
+      nodePort: 30080
