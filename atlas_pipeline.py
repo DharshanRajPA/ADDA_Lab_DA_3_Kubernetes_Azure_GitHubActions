@@ -1,105 +1,95 @@
-#!/usr/bin/env python3
-"""
-atlas_pipeline.py — Orchestrates Minikube deployment and GitHub CI for atlas-app.
-"""
-
-import os
 import subprocess
 import time
+import logging
+import os
+import sys
+import json
+from kubernetes import client, config
+from kubernetes.client.rest import ApiException
 
-# Configurable variables
-NAMESPACE = "atlas"
-NODE_PORT = 30080
-IMAGE_LOCAL = "atlas-app:latest"
-GITHUB_WORKFLOW = ".github/workflows/ci-atlas.yaml"
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-def run(cmd, **kwargs):
-    """Run a shell command and handle errors clearly."""
-    print(f"$ {cmd}")
+# Define helper functions for executing shell commands
+def run_command(command, timeout=300):
+    """Run a shell command and return the output"""
     try:
-        result = subprocess.run(cmd, shell=True, check=True, **kwargs)
-        return result
+        result = subprocess.run(command, shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+        return result.stdout.decode('utf-8')
     except subprocess.CalledProcessError as e:
-        print(f"❌ Command failed: {cmd}")
-        raise
+        logger.error(f"Command failed with error: {e.stderr.decode('utf-8')}")
+        sys.exit(1)
 
-def setup_minikube():
-    """Start Minikube if not running."""
+def start_minikube():
+    """Ensure Minikube is running"""
     try:
-        status = subprocess.check_output("minikube status --format '{{.Host}}'", shell=True).decode().strip()
-        if status.lower() != 'running':
-            raise Exception("Minikube not running")
-    except:
-        print("ℹ️  Minikube not running; starting with Docker driver...")
-        run("minikube start --driver=docker")
+        logger.info("Checking if Minikube is running...")
+        minikube_status = run_command("minikube status")
+        if "Running" not in minikube_status:
+            logger.info("Minikube not running; starting with Docker driver...")
+            run_command("minikube start --driver=docker")
+        else:
+            logger.info("Minikube is already running.")
+    except Exception as e:
+        logger.error(f"Error starting Minikube: {str(e)}")
+        sys.exit(1)
 
-    run("kubectl config use-context minikube")
-    run("kubectl get nodes")
-
-def deploy_minikube():
-    """Deploy to Minikube using Kubernetes YAMLs."""
-    print("👉 Ensuring namespace exists...")
+def create_namespace(namespace="atlas"):
+    """Create a Kubernetes namespace"""
     try:
-        run(f"kubectl create namespace {NAMESPACE}")
-    except:
-        print(f"ℹ️  Namespace '{NAMESPACE}' already exists; continuing.")
+        logger.info(f"Creating namespace '{namespace}'...")
+        run_command(f"kubectl create namespace {namespace} --dry-run=client -o yaml | kubectl apply -f -")
+    except ApiException as e:
+        logger.error(f"Error creating namespace: {e}")
+        sys.exit(1)
 
-    print("👉 Applying Deployment manifest...")
-    run(f"kubectl apply -n {NAMESPACE} -f k8s/atlas-deployment.yaml")
+def apply_kubernetes_manifest(manifest_path):
+    """Apply the Kubernetes manifest"""
+    try:
+        logger.info(f"Applying manifest from {manifest_path}...")
+        run_command(f"kubectl apply -f {manifest_path}")
+    except ApiException as e:
+        logger.error(f"Error applying manifest: {e}")
+        sys.exit(1)
 
-    print("👉 Applying Service manifest...")
-    run(f"kubectl apply -n {NAMESPACE} -f k8s/atlas-service-nodeport.yaml")
+def check_service_status(service_name, namespace="atlas", retries=5, delay=10):
+    """Check the status of the service"""
+    try:
+        for attempt in range(retries):
+            logger.info(f"Checking status of service '{service_name}' (attempt {attempt + 1}/{retries})...")
+            service_status = run_command(f"kubectl get svc {service_name} -n {namespace}")
+            if service_status:
+                logger.info(f"Service {service_name} is ready.")
+                return True
+            time.sleep(delay)
+        logger.error(f"Service {service_name} is not available after {retries} attempts.")
+        return False
+    except ApiException as e:
+        logger.error(f"Error checking service status: {e}")
+        return False
 
-def healthcheck_minikube():
-    """Check if the Minikube app is responding at /health."""
-    ip = subprocess.check_output("minikube ip", shell=True).decode().strip()
-    url = f"http://{ip}:{NODE_PORT}/health"
-    for i in range(5):
-        print(f"⏳ Health check attempt {i+1}/5: GET {url}")
-        try:
-            subprocess.run(f"curl -sf {url}", shell=True, check=True)
-            print("✅ Minikube app is healthy!")
-            return
-        except subprocess.CalledProcessError:
-            time.sleep(3)
-    print("❌ Health check failed.")
-    raise SystemExit("Health check failed after 5 attempts.")
+def main():
+    # Initialize Minikube
+    start_minikube()
 
-def generate_github_actions():
-    """Generate GitHub Actions workflow for CI."""
-    os.makedirs(os.path.dirname(GITHUB_WORKFLOW), exist_ok=True)
-    with open(GITHUB_WORKFLOW, "w") as f:
-        f.write(f"""\
-name: CI – atlas-app
-on:
-  push:
-    branches: [ main ]
-jobs:
-  minikube-ci:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Start Minikube
-        uses: medyagh/setup-minikube@latest
-      - name: Build image
-        run: docker build -t {IMAGE_LOCAL} .
-      - name: Load into Minikube
-        run: minikube image load {IMAGE_LOCAL}
-      - name: Deploy
-        run: |
-          kubectl create namespace {NAMESPACE} || true
-          kubectl apply -n {NAMESPACE} -f k8s/atlas-deployment.yaml
-          kubectl apply -n {NAMESPACE} -f k8s/atlas-service-nodeport.yaml
-      - name: Smoke test
-        run: |
-          IP=$(minikube ip)
-          for i in {{1..5}}; do curl -sf http://$IP:{NODE_PORT}/health && exit 0 || sleep 3; done
-          exit 1
-""")
-    print("✅ GitHub Actions workflow generated.")
+    # Set the namespace and manifest path
+    namespace = "atlas"
+    deployment_manifest = "k8s/atlas-deployment.yaml"
+    service_manifest = "k8s/atlas-service-nodeport.yaml"
+
+    # Create namespace
+    create_namespace(namespace)
+
+    # Apply deployment and service manifests
+    apply_kubernetes_manifest(deployment_manifest)
+    apply_kubernetes_manifest(service_manifest)
+
+    # Wait for the service to be up and check its status
+    if check_service_status("atlas-svc", namespace):
+        logger.info("Deployment successful, health checks passed.")
+    else:
+        logger.error("Health checks failed, check logs for details.")
 
 if __name__ == "__main__":
-    setup_minikube()
-    deploy_minikube()
-    healthcheck_minikube()
-    generate_github_actions()
+    main()

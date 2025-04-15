@@ -1,9 +1,9 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: atlas-deployment
   labels:
     app: atlas-app
+  name: atlas-deployment
 spec:
   replicas: 1
   selector:
@@ -15,11 +15,12 @@ spec:
         app: atlas-app
     spec:
       containers:
-      - name: atlas-container
-        image: atlas-app:latest
+      - image: atlas-app:latest
+        imagePullPolicy: Never
+        name: atlas-container
         ports:
-        - containerPort: 8000
-        readinessProbe:                   # optional but recommended
+        - containerPort: 5000
+        readinessProbe:
           httpGet:
             path: /health
             port: 8000
